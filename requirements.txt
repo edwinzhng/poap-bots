@@ -1,0 +1,4 @@
+gql==2.0.0
+python-dotenv==0.19.1
+tweepy==4.3.0
+web3==5.24.0
