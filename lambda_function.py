@@ -1,26 +1,57 @@
-import datetime
 import os
-from time import time
-from typing import Dict, List, Optional
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
 
+import requests
 import tweepy
 from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
 
 TWEET_MSG = """
--- Mainnet --
-Total Transfers: {total_transfers}
+📸 {network} snapshot ({date})
+Transfers: {total_transfers} ({minted} tokens minted)
+Events: {events}
+
+🏆 Event Leaderboard:
+{leaderboard}
 """
 
+POAP_EVENT_BASE_URL = "https://api.poap.xyz/events/id/"
 SUBGRAPH_MAINNET_URL = "https://api.thegraph.com/subgraphs/name/poap-xyz/poap"
 SUBGRAPH_XDAI_URL = "https://api.thegraph.com/subgraphs/name/poap-xyz/poap-xdai"
+SECONDS_PER_HOUR = 60 * 60
+FIRST_TO_FETCH = 1000
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 def _get_yesterday_unix_timestamp_utc():
-    today = datetime.datetime.fromtimestamp(time(), datetime.timezone.utc)
-    yesterday = today - datetime.timedelta(1)
-    yesterday_start_sec = int(yesterday.strftime("%s"))
-    return yesterday_start_sec
+    """Get the unix timestamp of the 2 days ago at midnight"""
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = today - timedelta(days=2)
+    yesterday_start_sec = int(yesterday.timestamp())
+    return yesterday, yesterday_start_sec
+
+
+def _fetch_event_name(event_id: int):
+    url = POAP_EVENT_BASE_URL + str(event_id)
+    event = requests.get(url).json()
+    return event.get("name")
+
+
+def _event_leaderboard(event_transfers: Dict) -> str:
+    events_sorted = sorted(event_transfers.items(), key=lambda x: -x[1])
+    leaderboard = []
+    i = 0
+    while i < 3 and i < len(events_sorted):
+        event = events_sorted[i]
+        event_id = int(event[0])
+        event_transfers = int(event[1])
+        event_name = _fetch_event_name(event_id)
+        transfer_text = "transfer" if event_transfers == 1 else "transfers"
+        leaderboard.append(f"{i + 1}. {event_name} ({event_transfers} {transfer_text})")
+        i += 1
+    return "\n".join(leaderboard)
 
 
 def _execute_gql(query, url: str, variable_values: Optional[Dict] = None) -> Client:
@@ -37,25 +68,72 @@ def _execute_gql(query, url: str, variable_values: Optional[Dict] = None) -> Cli
     return data
 
 
-def _fetch_subgraph_stats(url: str) -> List[Dict]:
-    yesterday_start_sec = _get_yesterday_unix_timestamp_utc()
+def _fetch_subgraph_stats(yesterday_sec: int, url: str) -> Dict:
     query = gql('''
-        query poapTransfers {
-            transfers(where: { timestamp_gt: $yesterdayStartSec }) {
-                id
-                timestamp
+        query poapTransfers(
+            $startSec: BigInt!,
+            $endSec: BigInt!,
+            $skip: Int!,
+            $first: Int!
+        ) {
+            transfers(
+                first: $first,
+                where: { timestamp_gte: $startSec, timestamp_lte: $endSec },
+                orderBy: timestamp,
+                orderDirection: desc,
+                subgraphError: deny,
+                skip: $skip
+            ) {
                 from {
                     id
+                }
+                to {
+                    id
+                }
+                token {
+                    event {
+                        id
+                    }
                 }
             }
         }
     ''')
-    variable_values = {
-        "yesterdayStartSec": yesterday_start_sec
+
+    stats = {
+        "transfers": [],
+        "minted": [],
+        "unique_events": set(),
+        "event_transfers": defaultdict(lambda: 0),
     }
-    data = _execute_gql(query, variable_values)
-    transfers = data["transfers"]
-    return transfers
+    for i in range(24):
+        skip = 0
+        start_sec = yesterday_sec + (i * SECONDS_PER_HOUR)
+        print(f"  Fetching from {datetime.utcfromtimestamp(start_sec)}")
+        while True:
+            print(f"    Fetch offset {skip}")
+            variable_values = {
+                "startSec": start_sec,
+                "endSec": start_sec + SECONDS_PER_HOUR,
+                "skip": skip,
+                "first": FIRST_TO_FETCH
+            }
+            data = _execute_gql(query, url, variable_values)
+            transfers = data["transfers"]
+            for transfer in transfers:
+                from_id = transfer["from"]["id"]
+                to_id = transfer["to"]["id"]
+                event_id = transfer["token"]["event"]["id"]
+                stats["transfers"].append(to_id)
+                if from_id == ZERO_ADDRESS:
+                    stats["minted"].append(to_id)
+                stats["unique_events"].add(event_id)
+                stats["event_transfers"][event_id] += 1
+
+            skip += len(transfers)
+            if len(transfers) < FIRST_TO_FETCH:
+                break
+
+    return stats
 
 
 def _auth_tweepy() -> tweepy.API:
@@ -72,14 +150,24 @@ def _auth_tweepy() -> tweepy.API:
 
 
 def _tweet_network_stats() -> None:
-    mainnet_transfers = _fetch_subgraph_stats(SUBGRAPH_MAINNET_URL)
-    msg = TWEET_MSG.format(
-        total_transfers=len(mainnet_transfers),
-    )
+    yesterday, start_sec = _get_yesterday_unix_timestamp_utc()
+    date = yesterday.strftime("%b %-d, %Y")
+    print(f"Start time from yesterday: {yesterday}, unix time {start_sec}")
 
-    print(f"Sending tweet:\n{msg}")
+    print("Fetching mainnet data...")
+    mainnet_stats = _fetch_subgraph_stats(start_sec, SUBGRAPH_MAINNET_URL)
+    mainnet_msg = TWEET_MSG.format(
+        network="Mainnet",
+        date=date,
+        total_transfers=len(mainnet_stats["transfers"]),
+        minted=len(mainnet_stats["minted"]),
+        events=len(mainnet_stats["unique_events"]),
+        leaderboard=_event_leaderboard(mainnet_stats["event_transfers"])
+    )
+    print(f"Mainnet tweet: {mainnet_msg}")
+
     api = _auth_tweepy()
-    # api.update_status(msg)
+    api.update_status(mainnet_msg)
 
 
 def lambda_handler(event, context):
