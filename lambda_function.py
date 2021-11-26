@@ -1,7 +1,7 @@
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import requests
 import tweepy
@@ -136,7 +136,7 @@ def _fetch_subgraph_stats(yesterday_sec: int, url: str) -> Dict:
     return stats
 
 
-def _auth_tweepy() -> tweepy.API:
+def _send_tweets(tweets: List[str]) -> tweepy.API:
     # Fetch credentials
     consumer_key = os.getenv("CONSUMER_KEY")
     consumer_secret = os.getenv("CONSUMER_SECRET")
@@ -146,7 +146,9 @@ def _auth_tweepy() -> tweepy.API:
     # Authenticate
     auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
     auth.set_access_token(access_token, access_token_secret)
-    return tweepy.API(auth)
+    api = tweepy.API(auth)
+    for tweet in tweets:
+        api.update_status(tweet)
 
 
 def _tweet_network_stats() -> None:
@@ -165,9 +167,7 @@ def _tweet_network_stats() -> None:
         leaderboard=_event_leaderboard(mainnet_stats["event_transfers"])
     )
     print(f"Mainnet tweet: {mainnet_msg}")
-
-    api = _auth_tweepy()
-    api.update_status(mainnet_msg)
+    _send_tweets([mainnet_msg])
 
 
 def lambda_handler(event, context):
