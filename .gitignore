@@ -1,6 +1,8 @@
 # Build
 *.zip
 .DS_Store
+build/
+node_modules/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
