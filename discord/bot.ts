@@ -32,6 +32,8 @@ const provider = new providers.InfuraProvider(
 const discordBot = new Discord.Client();
 discordBot.login(process.env.DISCORD_BOT_TOKEN);
 
+const seenTransactions = new Set<string>();
+
 const sleep = (ms: number): Promise<any> => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
@@ -64,7 +66,11 @@ const buildMessage = async (event: any, eventType: EventType) => {
     .setThumbnail(asset.image_url)
     .setURL(asset.permalink)
     .setTimestamp(Date.parse(`${event?.created_date}Z`))
-    .addField("Event", `[${asset.name} (#${poapEventId})](${eventUrl})`, eventInline);
+    .addField(
+      "Event",
+      `[${asset.name} (#${poapEventId})](${eventUrl})`,
+      eventInline
+    );
 
   if (eventType === EventType.transfer) {
     const fromAddress = event?.from_account?.address;
@@ -125,6 +131,20 @@ const fetchOpensea = async (urlParams: URLSearchParams): Promise<any> => {
   }
 };
 
+const processEvent = async (
+  event: any,
+  eventType: EventType,
+  channel: TextChannel
+) => {
+  if (seenTransactions.has(event.transaction.transaction_hash)) {
+    return;
+  }
+  seenTransactions.add(event.transaction.transaction_hash);
+  if (event.asset.name == null) event.asset.name = "Unnamed NFT";
+  const message = await buildMessage(event, eventType);
+  return await channel.send(message);
+};
+
 const sendDiscordMessages = async (
   channel: TextChannel,
   startSeconds: number,
@@ -151,23 +171,17 @@ const sendDiscordMessages = async (
   const openseaSales = await fetchOpensea(salesParams);
   await Promise.all(
     openseaSales?.asset_events?.reverse().map(async (event: any) => {
-      if (event.asset.name == null) event.asset.name = "Unnamed NFT";
-      const message = await buildMessage(event, EventType.successful);
-      return await channel.send(message);
+      return await processEvent(event, EventType.successful, channel);
     })
   );
-
   const openseaTransfers = await fetchOpensea(transferParams);
   await Promise.all(
     openseaTransfers?.asset_events?.reverse().map(async (event: any) => {
-      if (event.asset.name == null) event.asset.name = "Unnamed NFT";
-      const message = await buildMessage(event, EventType.transfer);
-      return await channel.send(message);
+      return await processEvent(event, EventType.transfer, channel);
     })
   );
-  const numSales = openseaSales?.asset_events?.length || 0;
-  const numTransfers = openseaTransfers?.asset_events?.length || 0;
-  return numSales + numTransfers;
+  
+  return seenTransactions.size;
 };
 
 const getDiscordChannel = async (
@@ -191,7 +205,7 @@ const main = async () => {
 
   try {
     let timeEnd = getCurrentSeconds();
-    let timeStart = timeEnd - 60; // Start by fetching last 60 seconds
+    let timeStart = timeEnd - 9000; // Start by fetching last 60 seconds
     while (true) {
       sendDiscordMessages(channel, timeStart, timeEnd)
         .then((res) => {
@@ -204,8 +218,10 @@ const main = async () => {
         })
         .catch((error) => {
           console.error(error);
+          console.log
         });
       await sleep(20000);
+      seenTransactions.clear();
       timeStart = timeEnd;
       timeEnd = getCurrentSeconds();
     }
