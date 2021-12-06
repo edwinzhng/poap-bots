@@ -180,13 +180,13 @@ const main = async () => {
 
   try {
     let timeEnd = getCurrentSeconds();
-    let timeStart = timeEnd - 1000; // Start by fetching last 30 seconds  
+    let timeStart = timeEnd - 60; // Start by fetching last 60 seconds
     while (true) {
       sendDiscordMessages(channel, timeStart, timeEnd)
         .then((res) => {
           const eventText = res === 1 ? "event" : "events";
-          const startDate = new Date(timeStart * 1000);
-          const endDate = new Date(timeEnd * 1000);
+          const startDate = new Date(timeStart * 1000).toLocaleString();
+          const endDate = new Date(timeEnd * 1000).toLocaleString();
           console.log(
             `Published ${res} ${eventText} between ${startDate} and ${endDate}`
           );
