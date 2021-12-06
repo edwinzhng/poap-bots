@@ -25,9 +25,9 @@ enum EventType {
   "successful",
 }
 
-const provider = new providers.InfuraProvider(
+const provider = new providers.EtherscanProvider(
   "homestead",
-  process.env.INFURA_PROJECT_ID
+  process.env.ETHERSCAN_API_KEY
 );
 const discordBot = new Discord.Client();
 discordBot.login(process.env.DISCORD_BOT_TOKEN);
@@ -46,7 +46,6 @@ const hyperlinkAddr = async (addr: string): Promise<string> => {
   if (addr === ZERO_ADDRESS) {
     return addr;
   }
-
   const addressUrl = POAP_SCAN_BASE_URL + addr;
   const ensName = await provider.lookupAddress(addr);
   return `[${ensName || addr}](${addressUrl})`;
@@ -137,7 +136,7 @@ const processEvent = async (
   channel: TextChannel
 ) => {
   if (seenTransactions.has(event.transaction.transaction_hash)) {
-    return;
+    return Promise.resolve();
   }
   seenTransactions.add(event.transaction.transaction_hash);
   if (event.asset.name == null) event.asset.name = "Unnamed NFT";
@@ -169,17 +168,13 @@ const sendDiscordMessages = async (
   });
 
   const openseaSales = await fetchOpensea(salesParams);
-  await Promise.all(
-    openseaSales?.asset_events?.reverse().map(async (event: any) => {
-      return await processEvent(event, EventType.successful, channel);
-    })
-  );
+  await Promise.all(openseaSales?.asset_events?.reverse().map(async (event: any) => {
+    await processEvent(event, EventType.successful, channel);
+  }));
   const openseaTransfers = await fetchOpensea(transferParams);
-  await Promise.all(
-    openseaTransfers?.asset_events?.reverse().map(async (event: any) => {
-      return await processEvent(event, EventType.transfer, channel);
-    })
-  );
+  await Promise.all(openseaTransfers?.asset_events?.reverse().map(async (event: any) => {
+    await processEvent(event, EventType.transfer, channel);
+  }));
   
   return seenTransactions.size;
 };
@@ -205,7 +200,7 @@ const main = async () => {
 
   try {
     let timeEnd = getCurrentSeconds();
-    let timeStart = timeEnd - 9000; // Start by fetching last 60 seconds
+    let timeStart = timeEnd - 60; // Start by fetching last 60 seconds
     while (true) {
       sendDiscordMessages(channel, timeStart, timeEnd)
         .then((res) => {
@@ -218,9 +213,8 @@ const main = async () => {
         })
         .catch((error) => {
           console.error(error);
-          console.log
         });
-      await sleep(20000);
+      await sleep(15000);
       seenTransactions.clear();
       timeStart = timeEnd;
       timeEnd = getCurrentSeconds();
