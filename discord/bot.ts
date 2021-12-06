@@ -168,11 +168,11 @@ const sendDiscordMessages = async (
   });
 
   const openseaSales = await fetchOpensea(salesParams);
-  await Promise.all(openseaSales?.asset_events?.reverse().map(async (event: any) => {
+  await Promise.all(openseaSales?.asset_events?.map(async (event: any) => {
     await processEvent(event, EventType.successful, channel);
   }));
   const openseaTransfers = await fetchOpensea(transferParams);
-  await Promise.all(openseaTransfers?.asset_events?.reverse().map(async (event: any) => {
+  await Promise.all(openseaTransfers?.asset_events?.map(async (event: any) => {
     await processEvent(event, EventType.transfer, channel);
   }));
   
@@ -200,7 +200,7 @@ const main = async () => {
 
   try {
     let timeEnd = getCurrentSeconds();
-    let timeStart = timeEnd - 60; // Start by fetching last 60 seconds
+    let timeStart = timeEnd;
     while (true) {
       sendDiscordMessages(channel, timeStart, timeEnd)
         .then((res) => {
