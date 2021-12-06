@@ -1,7 +1,7 @@
 import "dotenv/config";
 import Discord, { TextChannel } from "discord.js";
 import fetch from "node-fetch";
-import { ethers } from "ethers";
+import { ethers, providers } from "ethers";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -10,9 +10,9 @@ const OPENSEA_LOGO =
 const OPENSEA_API_EVENTS_URL = "https://api.opensea.io/api/v1/events?";
 
 const POAP_GALLERY_BASE_URL = "https://poap.gallery/event/";
+const POAP_SCAN_BASE_URL = "https://app.poap.xyz/scan/";
 
 const ETHERSCAN_TX_BASE_URL = "https://etherscan.io/tx/";
-const ETHERSCAN_ADDR_BASE_URL = "https://etherscan.io/address/";
 
 const COLORS = {
   blue: "#0099ff",
@@ -25,6 +25,13 @@ enum EventType {
   "successful",
 }
 
+const provider = new providers.InfuraProvider(
+  "homestead",
+  process.env.INFURA_PROJECT_ID
+);
+const discordBot = new Discord.Client();
+discordBot.login(process.env.DISCORD_BOT_TOKEN);
+
 const sleep = (ms: number): Promise<any> => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
@@ -33,12 +40,17 @@ const getCurrentSeconds = (): number => {
   return Math.round(new Date().getTime() / 1000);
 };
 
-const hyperlinkAddr = (addr: string): string => {
-  const addressUrl = ETHERSCAN_ADDR_BASE_URL + addr;
-  return `[${addr}](${addressUrl})`;
+const hyperlinkAddr = async (addr: string): Promise<string> => {
+  if (addr === ZERO_ADDRESS) {
+    return addr;
+  }
+
+  const addressUrl = POAP_SCAN_BASE_URL + addr;
+  const ensName = await provider.lookupAddress(addr);
+  return `[${ensName || addr}](${addressUrl})`;
 };
 
-const buildMessage = (event: any, eventType: EventType) => {
+const buildMessage = async (event: any, eventType: EventType) => {
   const asset = event.asset;
 
   const poapEventId = asset.external_link.split("/").reverse()[1];
@@ -46,39 +58,40 @@ const buildMessage = (event: any, eventType: EventType) => {
 
   const transactionHash = event.transaction.transaction_hash;
   const transactionUrl = ETHERSCAN_TX_BASE_URL + transactionHash;
+  const eventInline = eventType === EventType.successful;
 
   let message = new Discord.MessageEmbed()
-    .setThumbnail(asset.collection.image_url)
+    .setThumbnail(asset.image_url)
     .setURL(asset.permalink)
-    .setImage(asset.image_url)
     .setTimestamp(Date.parse(`${event?.created_date}Z`))
-    .addField("Event", `[${asset.name} (#${poapEventId})](${eventUrl})`, true);
+    .addField("Event", `[${asset.name} (#${poapEventId})](${eventUrl})`, eventInline);
 
-  if (eventType == EventType.transfer) {
+  if (eventType === EventType.transfer) {
     const fromAddress = event?.from_account?.address;
     const titleText = fromAddress === ZERO_ADDRESS ? "Minted" : "Transfer";
     const color = fromAddress === ZERO_ADDRESS ? COLORS.blue : COLORS.pink;
+    const to = await hyperlinkAddr(event?.to_account?.address);
+    const from = await hyperlinkAddr(fromAddress);
     message = message
-      .addFields(
-        { name: "To", value: hyperlinkAddr(event?.to_account?.address) },
-        { name: "From", value: hyperlinkAddr(fromAddress) }
-      )
+      .addFields({ name: "To", value: to }, { name: "From", value: from })
       .setColor(color)
       .setTitle(`${titleText}: ${asset.name}`);
     if (fromAddress !== ZERO_ADDRESS) {
       message = message.setFooter("Transferred on OpenSea", OPENSEA_LOGO);
+    } else {
+      message = message.setFooter("From OpenSea", OPENSEA_LOGO);
     }
-  } else if (eventType == EventType.successful) {
+  } else if (eventType === EventType.successful) {
+    const price = `${ethers.constants.EtherSymbol}${ethers.utils.formatEther(
+      event.total_price || "0"
+    )}`;
+    const buyer = await hyperlinkAddr(event?.winner_account?.address);
+    const seller = await hyperlinkAddr(event?.seller?.address);
     message = message
       .addFields(
-        {
-          name: "Amount",
-          value: `${ethers.constants.EtherSymbol}${ethers.utils.formatEther(
-            event.total_price || "0"
-          )}`,
-        },
-        { name: "Buyer", value: hyperlinkAddr(event?.winner_account?.address) },
-        { name: "Seller", value: hyperlinkAddr(event?.seller?.address) }
+        { name: "Amount", value: price, inline: true },
+        { name: "Buyer", value: buyer },
+        { name: "Seller", value: seller }
       )
       .setColor(COLORS.green)
       .setTitle(`Sold: ${asset.name}`)
@@ -87,7 +100,7 @@ const buildMessage = (event: any, eventType: EventType) => {
 
   message = message.addField(
     "Transaction",
-    `[${transactionUrl}](transactionUrl)`
+    `[${transactionHash}](${transactionUrl})`
   );
   return message;
 };
@@ -139,7 +152,7 @@ const sendDiscordMessages = async (
   await Promise.all(
     openseaSales?.asset_events?.reverse().map(async (event: any) => {
       if (event.asset.name == null) event.asset.name = "Unnamed NFT";
-      const message = buildMessage(event, EventType.successful);
+      const message = await buildMessage(event, EventType.successful);
       return await channel.send(message);
     })
   );
@@ -148,7 +161,7 @@ const sendDiscordMessages = async (
   await Promise.all(
     openseaTransfers?.asset_events?.reverse().map(async (event: any) => {
       if (event.asset.name == null) event.asset.name = "Unnamed NFT";
-      const message = buildMessage(event, EventType.transfer);
+      const message = await buildMessage(event, EventType.transfer);
       return await channel.send(message);
     })
   );
@@ -171,8 +184,6 @@ const getDiscordChannel = async (
 };
 
 const main = async () => {
-  const discordBot = new Discord.Client();
-  discordBot.login(process.env.DISCORD_BOT_TOKEN);
   const channel = await getDiscordChannel(
     discordBot,
     process.env.DISCORD_CHANNEL_ID
