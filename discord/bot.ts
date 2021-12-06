@@ -5,6 +5,10 @@ import { ethers, providers } from "ethers";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+// Fetch last SECS_TO_CHECK seconds in case realtime updates are missed
+const SECS_TO_CHECK = 120;
+const SECS_TO_SLEEP = 20;
+
 const OPENSEA_LOGO =
   "https://files.readme.io/566c72b-opensea-logomark-full-colored.png";
 const OPENSEA_API_EVENTS_URL = "https://api.opensea.io/api/v1/events?";
@@ -32,6 +36,7 @@ const provider = new providers.EtherscanProvider(
 const discordBot = new Discord.Client();
 discordBot.login(process.env.DISCORD_BOT_TOKEN);
 
+const seenTransactionTimes = new Object({});
 const seenTransactions = new Set<string>();
 
 const sleep = (ms: number): Promise<any> => {
@@ -41,6 +46,21 @@ const sleep = (ms: number): Promise<any> => {
 const getCurrentSeconds = (): number => {
   return Math.round(new Date().getTime() / 1000);
 };
+
+const evictSeenTransactions = () => {
+  // Delete seen transactions older than SECS_TO_CHECK * 2
+  const currentSec = getCurrentSeconds();
+  const transactionsToRemove = new Array<string>();
+  seenTransactions.forEach((value) => {
+    if (seenTransactionTimes[value] < currentSec - SECS_TO_CHECK * 2) {
+      transactionsToRemove.push(value);
+    }
+  });
+  transactionsToRemove.forEach((value) => {
+    seenTransactions.delete(value);
+    delete seenTransactionTimes[value];
+  });
+}
 
 const hyperlinkAddr = async (addr: string): Promise<string> => {
   if (addr === ZERO_ADDRESS) {
@@ -133,15 +153,19 @@ const fetchOpensea = async (urlParams: URLSearchParams): Promise<any> => {
 const processEvent = async (
   event: any,
   eventType: EventType,
-  channel: TextChannel
+  channel: TextChannel,
+  endSeconds: number
 ) => {
-  if (seenTransactions.has(event.transaction.transaction_hash)) {
-    return Promise.resolve();
+  const txHash: string = event.transaction.transaction_hash;
+  if (seenTransactions.has(txHash)) {
+    return Promise.resolve(0);
   }
-  seenTransactions.add(event.transaction.transaction_hash);
+  seenTransactions.add(txHash);
+  seenTransactionTimes[txHash] = endSeconds;
   if (event.asset.name == null) event.asset.name = "Unnamed NFT";
   const message = await buildMessage(event, eventType);
-  return await channel.send(message);
+  await channel.send(message);
+  return Promise.resolve(1);
 };
 
 const sendDiscordMessages = async (
@@ -167,16 +191,21 @@ const sendDiscordMessages = async (
     ...baseParams,
   });
 
+  let numMessages = 0;
   const openseaSales = await fetchOpensea(salesParams);
-  await Promise.all(openseaSales?.asset_events?.map(async (event: any) => {
-    await processEvent(event, EventType.successful, channel);
-  }));
+  await Promise.all(
+    openseaSales?.asset_events?.map(async (event: any) => {
+      numMessages += await processEvent(event, EventType.successful, channel, endSeconds);
+    })
+  );
   const openseaTransfers = await fetchOpensea(transferParams);
-  await Promise.all(openseaTransfers?.asset_events?.map(async (event: any) => {
-    await processEvent(event, EventType.transfer, channel);
-  }));
-  
-  return seenTransactions.size;
+  await Promise.all(
+    openseaTransfers?.asset_events?.map(async (event: any) => {
+      numMessages += await processEvent(event, EventType.transfer, channel, endSeconds);
+    })
+  );
+
+  return numMessages;
 };
 
 const getDiscordChannel = async (
@@ -208,15 +237,15 @@ const main = async () => {
           const startDate = new Date(timeStart * 1000).toLocaleString();
           const endDate = new Date(timeEnd * 1000).toLocaleString();
           console.log(
-            `Published ${res} ${eventText} between ${startDate} and ${endDate}`
+            `${res} new ${eventText} between ${startDate} and ${endDate}`
           );
         })
         .catch((error) => {
           console.error(error);
         });
-      await sleep(15000);
-      seenTransactions.clear();
-      timeStart = timeEnd;
+      await sleep(SECS_TO_SLEEP * 1000);
+      evictSeenTransactions();
+      timeStart = timeEnd - SECS_TO_CHECK;
       timeEnd = getCurrentSeconds();
     }
   } finally {
