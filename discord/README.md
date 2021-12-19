@@ -21,4 +21,4 @@ yarn install
 yarn start
 ```
 
-The bot can be deployed the same way as described above on a cloud platform or local computer. Currently, it is hosted on an AWS t2.micro instance which is free for 1 year, but could also be hosted on other platforms like Heroku.
+The bot can be deployed the same way as described above on a cloud platform or local computer.

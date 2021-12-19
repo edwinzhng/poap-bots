@@ -3,6 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
+import dotenv
 import requests
 import tweepy
 from gql import Client, gql
@@ -24,6 +25,7 @@ SECONDS_PER_HOUR = 60 * 60
 FIRST_TO_FETCH = 1000
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
+dotenv.load_dotenv()
 
 def _get_yesterday_unix_timestamp_utc():
     """Get the unix timestamp of the 2 days ago at midnight"""
@@ -151,7 +153,7 @@ def _send_tweets(tweets: List[str]) -> tweepy.API:
         api.update_status(tweet)
 
 
-def _tweet_network_stats() -> None:
+def tweet_network_stats() -> None:
     yesterday, start_sec = _get_yesterday_unix_timestamp_utc()
     date = yesterday.strftime("%b %-d, %Y")
     print(f"Start time from yesterday: {yesterday}, unix time {start_sec}")
@@ -170,7 +172,5 @@ def _tweet_network_stats() -> None:
     _send_tweets([mainnet_msg])
 
 
-def lambda_handler(event, context):
-    """Entrypoint for deploying to AWS Lambda"""
-    _tweet_network_stats()
-    return
+if __name__ == "__main__":
+    tweet_network_stats()
